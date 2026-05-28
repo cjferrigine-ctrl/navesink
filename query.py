@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-Navesink RAG query CLI — ask permitting questions about Red Bank, NJ.
-Run with: python query.py
+Navesink RAG query CLI — ask permitting questions about a configured town.
+
+Run with:
+  python query.py                   # defaults to Red Bank
+  python query.py --town fairhaven
 """
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import sys
+from pathlib import Path
 
 import anthropic
 from dotenv import load_dotenv
@@ -15,20 +21,23 @@ from pinecone import Pinecone
 
 load_dotenv()
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-INDEX_NAME   = "redbank-corpus"
+# ── Fixed settings ─────────────────────────────────────────────────────────────
 EMBED_MODEL  = "text-embedding-3-small"
 CLAUDE_MODEL = "claude-sonnet-4-5"
 TOP_K        = 5
+CONFIG_DIR   = Path(__file__).parent / "config"
 
-SYSTEM_PROMPT = (
-    "You are a municipal permitting assistant for Red Bank, NJ, built by Navesink Consulting. "
-    "RULES: (1) Answer ONLY using the document excerpts provided. Never use general knowledge. "
-    "(2) Always cite the source document name and section number for every factual claim. "
-    "(3) If the answer is not clearly present in the excerpts, say: I don't have enough information "
-    "in my current documents to answer this accurately — please contact the borough directly or "
-    "consult a licensed professional. (4) Never provide legal advice. (5) Use plain language."
-)
+# ── Config loader ──────────────────────────────────────────────────────────────
+def load_config(town: str) -> dict:
+    path = CONFIG_DIR / f"{town}.json"
+    if not path.exists():
+        available = [p.stem for p in CONFIG_DIR.glob("*.json")]
+        sys.exit(
+            f"ERROR: No config found for '{town}'. "
+            f"Available towns: {', '.join(sorted(available))}"
+        )
+    with path.open() as f:
+        return json.load(f)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def embed_question(oai: OpenAI, question: str) -> list[float]:
@@ -57,7 +66,9 @@ def build_context(matches: list) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def ask_claude(ac: anthropic.Anthropic, question: str, context: str) -> str:
+def ask_claude(
+    ac: anthropic.Anthropic, question: str, context: str, system_prompt: str
+) -> str:
     user_message = (
         f"Here are the relevant document excerpts:\n\n"
         f"{context}\n\n"
@@ -66,7 +77,7 @@ def ask_claude(ac: anthropic.Anthropic, question: str, context: str) -> str:
     msg = ac.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
     return msg.content[0].text
@@ -74,6 +85,19 @@ def ask_claude(ac: anthropic.Anthropic, question: str, context: str) -> str:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Navesink permitting assistant")
+    parser.add_argument(
+        "--town", default="redbank",
+        help="Town to query (default: redbank). Must match a file in config/."
+    )
+    args = parser.parse_args()
+
+    cfg           = load_config(args.town)
+    town_name     = cfg["town"]
+    state         = cfg["state"]
+    index_name    = cfg["pinecone_index"]
+    system_prompt = cfg["system_prompt"]
+
     openai_key    = os.environ.get("OPENAI_API_KEY", "").strip()
     pinecone_key  = os.environ.get("PINECONE_API_KEY", "").strip()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -89,14 +113,16 @@ def main() -> None:
     oai   = OpenAI(api_key=openai_key)
     pc    = Pinecone(api_key=pinecone_key)
     ac    = anthropic.Anthropic(api_key=anthropic_key)
-    index = pc.Index(INDEX_NAME)
+    index = pc.Index(index_name)
 
+    title = f"Navesink Permitting Assistant — {town_name}, {state}"
+    border = "═" * (len(title) + 4)
     print()
-    print("╔══════════════════════════════════════════════════════════╗")
-    print("║   Navesink Permitting Assistant — Red Bank, NJ           ║")
-    print("║   Powered by Navesink Consulting                         ║")
-    print("╚══════════════════════════════════════════════════════════╝")
-    print("\nAsk any question about Red Bank permitting, zoning, or")
+    print(f"╔{border}╗")
+    print(f"║  {title}  ║")
+    print(f"║  {'Powered by Navesink Consulting':<{len(title)}}  ║")
+    print(f"╚{border}╝")
+    print(f"\nAsk any question about {town_name} permitting, zoning, or")
     print("historic preservation. Type 'quit' to exit.\n")
 
     while True:
@@ -121,7 +147,7 @@ def main() -> None:
 
         print("  Generating answer...\n")
 
-        answer = ask_claude(ac, question, context)
+        answer = ask_claude(ac, question, context, system_prompt)
 
         print("─" * 62)
         print(answer)

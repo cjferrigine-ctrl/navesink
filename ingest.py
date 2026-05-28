@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-Navesink ingestion pipeline — reads PDFs from redbank_corpus/, chunks them,
+Navesink ingestion pipeline — reads PDFs from a town corpus/, chunks them,
 generates embeddings, and upserts everything into a Pinecone index.
 
-Run with:  python ingest.py
+Run with:
+  python ingest.py                   # defaults to Red Bank
+  python ingest.py --town fairhaven
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -24,9 +28,7 @@ from pinecone import Pinecone, ServerlessSpec
 
 load_dotenv()
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-PDF_DIR       = Path("redbank_corpus")
-INDEX_NAME    = "redbank-corpus"
+# ── Fixed settings (not town-specific) ────────────────────────────────────────
 EMBED_MODEL   = "text-embedding-3-small"
 EMBED_DIM     = 1536
 CHUNK_TOKENS  = 500
@@ -34,14 +36,27 @@ OVERLAP       = 50
 OCR_THRESHOLD = 50    # characters; pages below this trigger OCR
 EMBED_BATCH   = 50    # texts per OpenAI call
 UPSERT_BATCH  = 100   # vectors per Pinecone call
+CONFIG_DIR    = Path(__file__).parent / "config"
+
+# ── Config loader ──────────────────────────────────────────────────────────────
+def load_config(town: str) -> dict:
+    path = CONFIG_DIR / f"{town}.json"
+    if not path.exists():
+        available = [p.stem for p in CONFIG_DIR.glob("*.json")]
+        sys.exit(
+            f"ERROR: No config found for '{town}'. "
+            f"Available towns: {', '.join(sorted(available))}"
+        )
+    with path.open() as f:
+        return json.load(f)
 
 # ── Document-type detection from filename ─────────────────────────────────────
 _TYPE_RULES = [
-    ("zoning",        re.compile(r"zon|ordinance",          re.I)),
-    ("master_plan",   re.compile(r"master.?plan",           re.I)),
+    ("zoning",        re.compile(r"zon|ordinance",             re.I)),
+    ("master_plan",   re.compile(r"master.?plan",              re.I)),
     ("historic",      re.compile(r"historic|preservation|hpc", re.I)),
     ("board_minutes", re.compile(r"minutes|meeting|agenda|board", re.I)),
-    ("fee_schedule",  re.compile(r"fee|schedule|rate|tariff", re.I)),
+    ("fee_schedule",  re.compile(r"fee|schedule|rate|tariff",  re.I)),
 ]
 
 def detect_doc_type(filename: str) -> str:
@@ -87,10 +102,8 @@ def make_chunks(
         chunk_tokens = tokens[start:end]
         chunk_text = _enc.decode(chunk_tokens)
 
-        # Approximate char offset of this chunk's start in the original text
         char_offset = len(_enc.decode(tokens[:start])) if start else 0
 
-        # Last header at or before this char offset
         section_header = ""
         for pos, hdr in headers:
             if pos <= char_offset:
@@ -111,7 +124,6 @@ def make_chunks(
                 "chunk_index":    chunk_idx,
                 "doc_type":       doc_type,
                 "section_header": section_header,
-                # Store a text preview in metadata so retrieval can show context
                 "text":           chunk_text[:1000],
             },
         })
@@ -132,7 +144,7 @@ def extract_page_text(pdf_path: Path, page, page_num: int) -> str:
     try:
         doc = pdfium.PdfDocument(str(pdf_path))
         pg = doc[page_num - 1]
-        bitmap = pg.render(scale=300 / 72)  # 300 DPI
+        bitmap = pg.render(scale=300 / 72)
         pil_image = bitmap.to_pil()
         return pytesseract.image_to_string(pil_image)
     except Exception as exc:
@@ -154,37 +166,49 @@ def embed_batch(client: OpenAI, texts: list[str]) -> list[list[float]]:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Navesink ingestion pipeline")
+    parser.add_argument(
+        "--town", default="redbank",
+        help="Town config to use (default: redbank). Must match a file in config/."
+    )
+    args = parser.parse_args()
+
+    cfg        = load_config(args.town)
+    town_name  = cfg["town"]
+    pdf_dir    = Path(cfg["corpus_dir"])
+    index_name = cfg["pinecone_index"]
+
     openai_key   = os.environ.get("OPENAI_API_KEY", "").strip()
     pinecone_key = os.environ.get("PINECONE_API_KEY", "").strip()
     if not openai_key or not pinecone_key:
-        sys.exit(
-            "ERROR: OPENAI_API_KEY and PINECONE_API_KEY must be set in your .env file."
-        )
+        sys.exit("ERROR: OPENAI_API_KEY and PINECONE_API_KEY must be set in your .env file.")
 
     oai = OpenAI(api_key=openai_key)
     pc  = Pinecone(api_key=pinecone_key)
 
-    # Create the Pinecone index if it doesn't exist yet
     existing = [idx.name for idx in pc.list_indexes()]
-    if INDEX_NAME not in existing:
-        print(f"Creating Pinecone index '{INDEX_NAME}' (this takes ~30 seconds)...")
+    if index_name not in existing:
+        print(f"Creating Pinecone index '{index_name}' (this takes ~30 seconds)...")
         pc.create_index(
-            name=INDEX_NAME,
+            name=index_name,
             dimension=EMBED_DIM,
             metric="cosine",
             spec=ServerlessSpec(cloud="aws", region="us-east-1"),
         )
-        while not pc.describe_index(INDEX_NAME).status["ready"]:
+        while not pc.describe_index(index_name).status["ready"]:
             time.sleep(2)
         print("  Index ready.\n")
 
-    index = pc.Index(INDEX_NAME)
+    index = pc.Index(index_name)
 
-    pdf_files = sorted(PDF_DIR.glob("*.pdf"))
+    pdf_files = sorted(pdf_dir.glob("*.pdf"))
     if not pdf_files:
-        sys.exit(f"No PDFs found in {PDF_DIR}/  — add your files and re-run.")
+        sys.exit(f"No PDFs found in {pdf_dir}/  — add your files and re-run.")
 
-    print(f"Found {len(pdf_files)} PDF(s) in {PDF_DIR}/")
+    print(f"Town          : {town_name}")
+    print(f"Corpus        : {pdf_dir}/")
+    print(f"Pinecone index: {index_name}")
+    print(f"Found {len(pdf_files)} PDF(s)")
     print("─" * 60)
 
     total_chunks = 0
@@ -216,7 +240,6 @@ def main() -> None:
                 print("  Skipping — no text extracted.")
                 continue
 
-            # Embed
             texts = [c["text"] for c in all_chunks]
             embeddings: list[list[float]] = []
             for i in range(0, len(texts), EMBED_BATCH):
@@ -228,7 +251,6 @@ def main() -> None:
                 )
             print(f"  Embeddings done ({len(embeddings)})                    ")
 
-            # Upsert
             vectors = [
                 {"id": c["id"], "values": emb, "metadata": c["metadata"]}
                 for c, emb in zip(all_chunks, embeddings)
@@ -247,13 +269,12 @@ def main() -> None:
             print(f"  [FAILED] {exc}")
             failed.append((filename, str(exc)))
 
-    # ── Summary ────────────────────────────────────────────────────────────────
     print(f"\n{'═' * 60}")
-    print("INGESTION COMPLETE")
+    print(f"INGESTION COMPLETE — {town_name}")
     print(f"{'═' * 60}")
     print(f"  PDFs processed : {len(pdf_files) - len(failed)} / {len(pdf_files)}")
     print(f"  Chunks created : {total_chunks}")
-    print(f"  Pinecone index : {INDEX_NAME}")
+    print(f"  Pinecone index : {index_name}")
 
     if failed:
         print(f"\n  Failed files ({len(failed)}):")

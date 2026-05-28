@@ -1,8 +1,37 @@
-# Navesink — Red Bank Corpus Ingestion Pipeline
+# Navesink — Municipal Permitting Assistant
 
-This script reads every PDF in `redbank_corpus/`, breaks each document into
-searchable chunks, and loads them into a Pinecone vector database so Navesink
-can answer permitting questions using Retrieval-Augmented Generation (RAG).
+Navesink is a RAG-based (Retrieval-Augmented Generation) permitting assistant
+that answers questions about zoning, historic preservation, and municipal
+regulations using a town's own official documents.
+
+Currently supported towns:
+
+| Town | Corpus folder | Pinecone index |
+|---|---|---|
+| Red Bank, NJ | `redbank_corpus/` | `redbank-corpus` |
+| Fair Haven, NJ | `fairhaven_corpus/` | `fairhaven-corpus` |
+
+---
+
+## Architecture
+
+```
+navesink/
+├── config/
+│   ├── redbank.json       ← town name, corpus dir, Pinecone index, system prompt
+│   └── fairhaven.json
+├── redbank_corpus/        ← drop Red Bank PDFs here
+├── fairhaven_corpus/      ← drop Fair Haven PDFs here
+├── ingest.py              ← ingestion pipeline (--town flag)
+├── query.py               ← query CLI (--town flag)
+├── requirements.txt
+├── .env                   ← your API keys (never committed)
+└── .env.example
+```
+
+**Adding a new town** requires only two things:
+1. Add a `config/<townslug>.json` file
+2. Create a `<townslug>_corpus/` folder and drop PDFs into it
 
 ---
 
@@ -10,34 +39,29 @@ can answer permitting questions using Retrieval-Augmented Generation (RAG).
 
 | Requirement | Why |
 |---|---|
-| Python 3.9 or later | Runs the script |
+| Python 3.9 or later | Runs the scripts |
 | Tesseract OCR | Reads scanned/image-based PDFs |
-| Poppler | Converts PDF pages to images for OCR |
 | An OpenAI API key | Generates text embeddings |
 | A Pinecone API key | Stores and searches the embeddings |
+| An Anthropic API key | Powers the answer generation |
 
 ---
 
 ## Step 1 — Install system tools (one-time)
 
 ### Mac
-Open Terminal and run:
-```
-brew install tesseract poppler
+```bash
+brew install tesseract
 ```
 > If you don't have Homebrew, install it first at https://brew.sh
 
 ### Windows
-1. Download and install **Tesseract** from:
-   https://github.com/UB-Mannheim/tesseract/wiki
-   During install, note the path (usually `C:\Program Files\Tesseract-OCR\`).
-2. Download and install **Poppler for Windows** from:
-   https://github.com/oschwartz10612/poppler-windows/releases
-   Extract it and add the `bin/` folder to your system PATH.
+Download and install **Tesseract** from:
+https://github.com/UB-Mannheim/tesseract/wiki
 
 ### Linux (Ubuntu/Debian)
-```
-sudo apt install tesseract-ocr poppler-utils
+```bash
+sudo apt install tesseract-ocr
 ```
 
 ---
@@ -46,29 +70,27 @@ sudo apt install tesseract-ocr poppler-utils
 
 ### OpenAI
 1. Go to https://platform.openai.com/api-keys
-2. Click **Create new secret key**, name it something like "navesink"
+2. Click **Create new secret key**, name it "navesink"
 3. Copy the key (starts with `sk-`) — you only see it once
 
 ### Pinecone
 1. Go to https://app.pinecone.io and create a free account
-2. In the left sidebar, click **API Keys**
-3. Copy your default API key
+2. In the left sidebar, click **API Keys** and copy your key
+
+### Anthropic
+1. Go to https://console.anthropic.com/settings/keys
+2. Click **Create Key**, name it "navesink"
+3. Copy the key (starts with `sk-ant-`)
 
 ---
 
 ## Step 3 — Set up the project
 
-Open Terminal, navigate to this folder, then run these commands one at a time:
-
 ```bash
-# Create a Python virtual environment (keeps dependencies tidy)
 python3 -m venv venv
+source venv/bin/activate       # Mac / Linux
+# venv\Scripts\activate        # Windows
 
-# Activate it
-source venv/bin/activate          # Mac / Linux
-# venv\Scripts\activate           # Windows — use this line instead
-
-# Install all dependencies
 pip install -r requirements.txt
 ```
 
@@ -77,27 +99,34 @@ pip install -r requirements.txt
 ## Step 4 — Add your API keys
 
 ```bash
-# Copy the example file
 cp .env.example .env
 ```
 
-Now open `.env` in any text editor and replace the placeholder values with
-your real keys:
+Open `.env` and fill in all three keys:
 
 ```
-OPENAI_API_KEY=sk-...your-real-key...
-PINECONE_API_KEY=...your-real-key...
+OPENAI_API_KEY=sk-...
+PINECONE_API_KEY=...
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Save the file. **Never share or commit this file.**
+**Never share or commit this file.**
 
 ---
 
-## Step 5 — Add your PDFs
+## Step 5 — Add PDFs and run ingestion
 
-Place all your Red Bank PDF documents inside the `redbank_corpus/` folder.
+Drop your PDFs into the appropriate corpus folder, then run:
 
-The script auto-detects the document type from the filename:
+```bash
+# Ingest Red Bank documents (default)
+python ingest.py
+
+# Ingest Fair Haven documents
+python ingest.py --town fairhaven
+```
+
+The script auto-detects document type from the filename:
 
 | Filename contains | Detected type |
 |---|---|
@@ -108,49 +137,45 @@ The script auto-detects the document type from the filename:
 | `fee`, `schedule`, `rate` | `fee_schedule` |
 | anything else | `other` |
 
-**Tip:** Rename files to match (e.g. `redbank_zoning_2023.pdf`) so each
-document gets tagged correctly.
-
 ---
 
-## Step 6 — Run the pipeline
-
-Make sure your virtual environment is still active (you'll see `(venv)` in
-your prompt), then run:
+## Step 6 — Run the query assistant
 
 ```bash
-python ingest.py
+# Query Red Bank (default)
+python query.py
+
+# Query Fair Haven
+python query.py --town fairhaven
 ```
 
-You'll see live progress for each file:
-
-```
-Found 5 PDF(s) in redbank_corpus/
-────────────────────────────────────────────────────────────
-
-[1/5] redbank_zoning_2023.pdf  (type: zoning)
-  42 page(s) → 318 chunks
-  Embeddings done (318)
-  Upserted 318 vectors to Pinecone
-
-[2/5] master_plan_2019.pdf  (type: master_plan)
-  ...
-
-════════════════════════════════════════════════════════════
-INGESTION COMPLETE
-════════════════════════════════════════════════════════════
-  PDFs processed : 5 / 5
-  Chunks created : 1,402
-  Pinecone index : redbank-corpus
-
-  All files processed successfully.
-```
+Type your question at the prompt and receive a cited answer drawn from the
+town's official documents. Type `quit` to exit.
 
 ---
 
-## Re-running the pipeline
+## Adding a new town
 
-You can run `python ingest.py` again any time you add new PDFs.
+1. Create `config/<townslug>.json` (copy `config/redbank.json` as a template):
+   ```json
+   {
+     "town": "Town Name",
+     "state": "NJ",
+     "corpus_dir": "<townslug>_corpus",
+     "pinecone_index": "<townslug>-corpus",
+     "system_prompt": "You are a municipal permitting assistant for Town Name, NJ..."
+   }
+   ```
+2. Create the corpus folder: `mkdir <townslug>_corpus`
+3. Drop PDFs into it
+4. Run `python ingest.py --town <townslug>`
+5. Query with `python query.py --town <townslug>`
+
+---
+
+## Re-running ingestion
+
+Run `python ingest.py --town <town>` any time you add new PDFs.
 Existing chunks are overwritten (not duplicated) because each chunk has a
 unique ID derived from its filename, page number, and position.
 
@@ -158,18 +183,18 @@ unique ID derived from its filename, page number, and position.
 
 ## Troubleshooting
 
+**`No config found for '<town>'`**
+→ Check that `config/<town>.json` exists and the spelling matches.
+
+**`No PDFs found in <corpus>/`**
+→ Drop PDFs into the correct corpus folder and re-run.
+
 **`tesseract is not installed or it's not in your PATH`**
-→ Tesseract isn't installed or wasn't added to PATH. Re-run Step 1.
+→ Re-run Step 1 to install Tesseract.
 
-**`Unable to get page count. Is poppler installed and in PATH?`**
-→ Poppler isn't installed. Re-run Step 1.
-
-**`OPENAI_API_KEY and PINECONE_API_KEY must be set`**
-→ Your `.env` file is missing or the keys are still placeholders. Re-check Step 4.
-
-**`No PDFs found in redbank_corpus/`**
-→ Drop your PDFs into the `redbank_corpus/` folder, then re-run.
+**`OPENAI_API_KEY ... must be set`**
+→ Check that `.env` exists and all three keys are filled in.
 
 **A file shows `[FAILED]` in the summary**
-→ The error message next to the filename tells you why. Common causes:
-   encrypted PDFs (remove password first), or corrupted files.
+→ The error next to the filename tells you why. Common causes:
+   encrypted PDFs (remove password protection first) or corrupted files.
