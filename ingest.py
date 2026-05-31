@@ -135,9 +135,127 @@ def make_chunks(
 
     return chunks
 
+# ── ecode360 print-header pattern (appears on every page of FairHavenCode.pdf) ─
+_ECODE360_HEADER_RE = re.compile(
+    r"^Borough of Fair Haven,?\s*NJ\s*[-–]\s*Borough of Fair Haven,?\s*NJ\s*"
+    r"https?://\S+\s*",
+    re.MULTILINE,
+)
+
+def _strip_ecode360_header(text: str) -> str:
+    return _ECODE360_HEADER_RE.sub("", text).lstrip()
+
+
+# ── Serialize a pdfplumber table into structured prose lines ──────────────────
+def _table_to_prose(table_data: list[list]) -> str:
+    """
+    Convert a 2-D table (list of rows from pdfplumber extract_table) into
+    structured prose that preserves row/column relationships for embedding.
+
+    Strategy:
+      - Last non-empty row that looks like a header (mostly short strings,
+        no digits-only cells) becomes the column-name row.
+      - Each subsequent data row is serialized as
+        "ColA: val | ColB: val | ..." skipping None/empty cells.
+      - If no header row is detected, fall back to positional labels.
+    """
+    if not table_data:
+        return ""
+
+    # Reverse rows if every text cell appears to be character-reversed
+    # (heuristic: majority of alpha tokens read backwards are real English words)
+    def _looks_reversed(row: list) -> bool:
+        tokens = []
+        for cell in row:
+            if cell:
+                tokens.extend(str(cell).split())
+        if not tokens:
+            return False
+        rev_hits = sum(1 for t in tokens if t[::-1].isalpha() and len(t) > 3)
+        return rev_hits > len(tokens) * 0.5
+
+    # Check first non-empty row
+    sample_rows = [r for r in table_data if any(c for c in r)][:3]
+    reversed_pdf = any(_looks_reversed(r) for r in sample_rows)
+
+    def _fix(cell) -> str:
+        if cell is None:
+            return ""
+        s = str(cell).strip()
+        if reversed_pdf:
+            # Reverse each whitespace-separated token individually, then
+            # re-join — this handles multi-word cells like "mumixaM erauqs("
+            s = " ".join(tok[::-1] for tok in s.split())
+        # Normalise internal whitespace / newlines
+        return re.sub(r"\s+", " ", s).strip()
+
+    # Find header row: last row where most cells are non-numeric short strings
+    header_idx = None
+    for i in range(len(table_data) - 1, -1, -1):
+        row = [_fix(c) for c in table_data[i]]
+        non_empty = [c for c in row if c]
+        if not non_empty:
+            continue
+        digit_only = sum(1 for c in non_empty if re.fullmatch(r"[\d,\.%\-/()N/A]+", c))
+        if digit_only / len(non_empty) < 0.4:
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        headers = [_fix(c) for c in table_data[header_idx]]
+        data_rows = [
+            r for i, r in enumerate(table_data)
+            if i != header_idx and any(c for c in r)
+        ]
+    else:
+        headers = [f"Col{j+1}" for j in range(len(table_data[0]))]
+        data_rows = [r for r in table_data if any(c for c in r)]
+
+    lines = []
+    # Carry forward None cells from merged header columns
+    filled_headers = []
+    last = ""
+    for h in headers:
+        last = h if h else last
+        filled_headers.append(last)
+
+    for row in data_rows:
+        fixed = [_fix(c) for c in row]
+        # Carry forward row-span labels in first two columns
+        parts = []
+        for h, v in zip(filled_headers, fixed):
+            if v and v != h:
+                label = h if h else ""
+                parts.append(f"{label}: {v}" if label else v)
+        if parts:
+            lines.append(" | ".join(parts))
+
+    return "\n".join(lines)
+
+
 # ── PDF text extraction with OCR fallback ─────────────────────────────────────
 def extract_page_text(pdf_path: Path, page, page_num: int) -> str:
+    # For pages where pdfplumber detects table structure, use extract_table()
+    # which preserves row/column relationships better than extract_text().
+    tables = page.find_tables()
+    if tables:
+        prose_parts = []
+        for tbl in tables:
+            data = tbl.extract()
+            prose = _table_to_prose(data)
+            if prose.strip():
+                prose_parts.append(prose)
+        # Also grab any non-table text on the page (headings, footnotes)
+        raw_text = page.extract_text() or ""
+        raw_text = _strip_ecode360_header(raw_text)
+        if raw_text.strip():
+            prose_parts.append(raw_text)
+        combined = "\n\n".join(prose_parts)
+        if len(combined.strip()) >= OCR_THRESHOLD:
+            return combined
+
     text = page.extract_text() or ""
+    text = _strip_ecode360_header(text)
     if len(text.strip()) >= OCR_THRESHOLD:
         return text
 

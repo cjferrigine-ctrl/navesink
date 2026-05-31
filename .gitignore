@@ -1,9 +1,11 @@
 # Environment — never commit API keys
 .env
 
-# Corpus folders and document files — too large for git, not source code
-redbank_corpus/
-fairhaven_corpus/
+# Corpus folders — ignore all files except manually authored markdown
+redbank_corpus/*
+!redbank_corpus/*.md
+fairhaven_corpus/*
+!fairhaven_corpus/*.md
 *.pdf
 *.docx
 
