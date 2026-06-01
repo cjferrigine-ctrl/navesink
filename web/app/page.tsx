@@ -66,7 +66,12 @@ export default function HomePage() {
       const res  = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ town: townSlug, message: text, persona: persona ?? 'resident' }),
+        body: JSON.stringify({
+          town: townSlug,
+          message: text,
+          persona: persona ?? 'resident',
+          history: messages.map(m => ({ role: m.role, content: m.content })),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Request failed');

@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { Pinecone } from '@pinecone-database/pinecone';
 import Anthropic from '@anthropic-ai/sdk';
 import { TOWNS } from '@/lib/towns';
-import type { Citation, Persona } from '@/types';
+import type { Citation, Message, Persona } from '@/types';
 
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 
@@ -25,10 +25,11 @@ const TOP_K        = 5;
 
 export async function POST(req: NextRequest) {
   try {
-    const { town: townSlug, message, persona } = (await req.json()) as {
+    const { town: townSlug, message, persona, history } = (await req.json()) as {
       town: string;
       message: string;
       persona?: Persona;
+      history?: Pick<Message, 'role' | 'content'>[];
     };
 
     const town = TOWNS[townSlug];
@@ -76,8 +77,14 @@ export async function POST(req: NextRequest) {
 
     const context = contextParts.join('\n\n---\n\n');
 
-    // 4 — Call Claude
-    const userMessage =
+    // 4 — Build multi-turn conversation for Claude
+    // Prior turns: cap at last 10 messages, exclude the current user message (sent separately below)
+    const priorTurns = (history ?? [])
+      .slice(-10)
+      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+    // Current turn: inject RAG context only into the latest user message
+    const currentUserMessage =
       `Here are the relevant document excerpts:\n\n${context}\n\nQuestion: ${message.trim()}`;
 
     const activePersona: Persona = persona ?? 'resident';
@@ -87,7 +94,7 @@ export async function POST(req: NextRequest) {
       model: CLAUDE_MODEL,
       max_tokens: 1024,
       system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
+      messages: [...priorTurns, { role: 'user', content: currentUserMessage }],
     });
 
     const firstBlock = claudeResp.content[0];
