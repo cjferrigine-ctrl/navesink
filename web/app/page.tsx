@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { TOWNS, DEFAULT_TOWN } from '@/lib/towns';
 import type { Message, Persona } from '@/types';
 
@@ -189,7 +190,13 @@ export default function HomePage() {
                         : 'bg-white text-gray-800 shadow-sm border border-gray-200 rounded-bl-sm'
                     }`}
                   >
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                    {msg.role === 'assistant' ? (
+                      <div className="prose prose-sm prose-gray max-w-none">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                    )}
 
                     {/* Citations */}
                     {msg.citations && msg.citations.length > 0 && (
