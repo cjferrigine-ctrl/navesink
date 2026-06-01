@@ -3,16 +3,32 @@ import OpenAI from 'openai';
 import { Pinecone } from '@pinecone-database/pinecone';
 import Anthropic from '@anthropic-ai/sdk';
 import { TOWNS } from '@/lib/towns';
-import type { Citation } from '@/types';
+import type { Citation, Persona } from '@/types';
 
-const CLAUDE_MODEL = 'claude-sonnet-4-5';
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
+
+const PERSONA_MODIFIERS: Record<Persona, string> = {
+  resident:
+    'Speak warmly and conversationally, like a knowledgeable neighbor. Use plain language. ' +
+    'Open with a brief friendly acknowledgment. Frame next steps encouragingly. ' +
+    'Keep all citations and numbers intact.',
+  developer:
+    'Be direct and technical. Lead with the specific numbers, setbacks, or permit requirements. ' +
+    'Use bullet points and checklist format. Skip the preamble. Include all citations. ' +
+    'Treat the user as a professional who knows the code.',
+  employee:
+    'Be citation-first and formal. Quote ordinance language directly where relevant. ' +
+    'Include cross-references to related sections. Be efficient and precise. ' +
+    'Treat the user as a peer who knows the municipal code.',
+};
 const TOP_K        = 5;
 
 export async function POST(req: NextRequest) {
   try {
-    const { town: townSlug, message } = (await req.json()) as {
+    const { town: townSlug, message, persona } = (await req.json()) as {
       town: string;
       message: string;
+      persona?: Persona;
     };
 
     const town = TOWNS[townSlug];
@@ -64,15 +80,18 @@ export async function POST(req: NextRequest) {
     const userMessage =
       `Here are the relevant document excerpts:\n\n${context}\n\nQuestion: ${message.trim()}`;
 
+    const activePersona: Persona = persona ?? 'resident';
+    const systemPrompt = `${town.systemPrompt}\n\n${PERSONA_MODIFIERS[activePersona]}`;
+
     const claudeResp = await ac.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
-      system: town.systemPrompt,
+      system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     });
 
-    const answer =
-      claudeResp.content[0].type === 'text' ? claudeResp.content[0].text : '';
+    const firstBlock = claudeResp.content[0];
+    const answer = firstBlock?.type === 'text' ? firstBlock.text : '';
 
     return NextResponse.json({ answer, citations });
   } catch (err) {

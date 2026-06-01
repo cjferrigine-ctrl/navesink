@@ -1,3 +1,5 @@
+export type Persona = 'resident' | 'developer' | 'employee';
+
 export interface TownConfig {
   slug: string;
   name: string;

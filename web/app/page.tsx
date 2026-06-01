@@ -2,7 +2,19 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { TOWNS, DEFAULT_TOWN } from '@/lib/towns';
-import type { Message } from '@/types';
+import type { Message, Persona } from '@/types';
+
+const PERSONA_OPTIONS: { value: Persona; label: string; icon: string }[] = [
+  { value: 'resident',  label: "I'm a Resident",        icon: '🏠' },
+  { value: 'developer', label: 'Developer / Contractor', icon: '🔨' },
+  { value: 'employee',  label: 'Borough Employee',       icon: '🏛️' },
+];
+
+const PERSONA_DISPLAY: Record<Persona, { label: string; icon: string }> = {
+  resident:  { label: 'Resident',             icon: '🏠' },
+  developer: { label: 'Developer/Contractor', icon: '🔨' },
+  employee:  { label: 'Borough Employee',     icon: '🏛️' },
+};
 
 export default function HomePage() {
   const [townSlug, setTownSlug]   = useState(DEFAULT_TOWN);
@@ -10,16 +22,24 @@ export default function HomePage() {
   const [input, setInput]         = useState('');
   const [loading, setLoading]     = useState(false);
   const [expanded, setExpanded]   = useState<Set<string>>(new Set());
+  const [persona, setPersona]     = useState<Persona | null>(null);
   const bottomRef                 = useRef<HTMLDivElement>(null);
   const textareaRef               = useRef<HTMLTextAreaElement>(null);
 
   const town = TOWNS[townSlug];
 
-  // Clear chat when town changes
+  // Clear chat and persona when town changes
   useEffect(() => {
     setMessages([]);
     setExpanded(new Set());
+    setPersona(null);
   }, [townSlug]);
+
+  const handleChangePersona = () => {
+    setPersona(null);
+    setMessages([]);
+    setExpanded(new Set());
+  };
 
   // Auto-scroll to latest message
   useEffect(() => {
@@ -46,7 +66,7 @@ export default function HomePage() {
       const res  = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ town: townSlug, message: text }),
+        body: JSON.stringify({ town: townSlug, message: text, persona: persona ?? 'resident' }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Request failed');
@@ -83,19 +103,33 @@ export default function HomePage() {
           <span className="text-white font-bold text-lg tracking-tight">Navesink</span>
           <span className="text-blue-300 text-sm hidden sm:inline">Municipal Permitting Assistant</span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-blue-300 text-sm">Town:</span>
-          <select
-            value={townSlug}
-            onChange={e => setTownSlug(e.target.value)}
-            className="rounded-lg bg-white text-gray-900 px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
-          >
-            {Object.values(TOWNS).map(t => (
-              <option key={t.slug} value={t.slug}>
-                {t.name}, {t.state}
-              </option>
-            ))}
-          </select>
+        <div className="flex items-center gap-3">
+          {persona && (
+            <div className="flex items-center gap-1.5 bg-blue-800 rounded-full px-3 py-1 text-xs text-blue-100">
+              <span>{PERSONA_DISPLAY[persona].icon}</span>
+              <span>{PERSONA_DISPLAY[persona].label}</span>
+              <button
+                onClick={handleChangePersona}
+                className="ml-1 text-blue-300 hover:text-white transition-colors underline underline-offset-2"
+              >
+                Change
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <span className="text-blue-300 text-sm">Town:</span>
+            <select
+              value={townSlug}
+              onChange={e => setTownSlug(e.target.value)}
+              className="rounded-lg bg-white text-gray-900 px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
+            >
+              {Object.values(TOWNS).map(t => (
+                <option key={t.slug} value={t.slug}>
+                  {t.name}, {t.state}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </header>
 
@@ -108,10 +142,33 @@ export default function HomePage() {
               <h2 className="text-xl font-semibold text-gray-700 mb-2">
                 {town.name} Permitting Assistant
               </h2>
-              <p className="text-gray-500 text-sm max-w-sm mx-auto leading-relaxed">
-                Ask about zoning, setbacks, permitted uses, historic preservation,
-                fees, or any other {town.name} permitting topic.
-              </p>
+              {!persona ? (
+                <div className="mt-6 max-w-sm mx-auto">
+                  <p className="text-gray-600 text-sm mb-4 leading-relaxed">
+                    Before we get started — who are you? This helps me tailor my answers.
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {PERSONA_OPTIONS.map(opt => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setPersona(opt.value)}
+                        className="flex items-center gap-3 w-full rounded-xl border border-gray-200 bg-white
+                                   px-4 py-3 text-sm font-medium text-gray-700 shadow-sm
+                                   hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700
+                                   transition-colors text-left"
+                      >
+                        <span className="text-lg">{opt.icon}</span>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-gray-500 text-sm max-w-sm mx-auto leading-relaxed">
+                  Ask about zoning, setbacks, permitted uses, historic preservation,
+                  fees, or any other {town.name} permitting topic.
+                </p>
+              )}
             </div>
           ) : (
             <div className="space-y-4">
